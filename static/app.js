@@ -5,8 +5,12 @@ class TradingApp {
         this.refreshIntervals = {
             market: null,
             portfolio: null,
-            trades: null
+            trades: null,
+            auto: null
         };
+        this.autoTradingEnabled = true;
+        this.autoToggleBusy = false;
+        this.manualExecuting = false;
         this.init();
     }
 
@@ -14,6 +18,7 @@ class TradingApp {
         this.initEventListeners();
         this.loadModels();
         this.loadMarketPrices();
+        this.fetchAutoTradingStatus();
         this.startRefreshCycles();
     }
 
@@ -23,6 +28,8 @@ class TradingApp {
         document.getElementById('cancelBtn').addEventListener('click', () => this.hideModal());
         document.getElementById('submitBtn').addEventListener('click', () => this.submitModel());
         document.getElementById('refreshBtn').addEventListener('click', () => this.refresh());
+        document.getElementById('manualExecuteBtn').addEventListener('click', () => this.manualExecute());
+        document.getElementById('toggleAutoBtn').addEventListener('click', () => this.toggleAutoTrading());
 
         document.querySelectorAll('.tab-btn').forEach(btn => {
             btn.addEventListener('click', (e) => this.switchTab(e.target.dataset.tab));
@@ -33,6 +40,138 @@ class TradingApp {
             autoRunCheckbox.addEventListener('change', () => this.toggleAutoRunFields());
         }
         this.toggleAutoRunFields();
+    }
+
+    async fetchAutoTradingStatus() {
+        try {
+            const response = await fetch('/api/auto-trading');
+            if (!response.ok) {
+                throw new Error(`Status request failed with ${response.status}`);
+            }
+            const data = await response.json();
+            this.autoTradingEnabled = Boolean(data.enabled);
+        } catch (error) {
+            console.error('Failed to load auto trading status:', error);
+        } finally {
+            this.updateAutoTradingControls();
+        }
+    }
+
+    updateAutoTradingControls() {
+        this.updateAutoTradingButton();
+        this.updateAutoTradingIndicator();
+    }
+
+    updateAutoTradingButton() {
+        const button = document.getElementById('toggleAutoBtn');
+        if (!button) return;
+
+        const icon = this.autoTradingEnabled ? 'pause-circle' : 'play-circle';
+        const text = this.autoTradingEnabled ? '暂停自动交易' : '恢复自动交易';
+        if (this.autoToggleBusy) {
+            button.innerHTML = '<i class="bi bi-hourglass-split"></i> 切换中...';
+            return;
+        }
+        button.innerHTML = `<i class="bi bi-${icon}"></i> ${text}`;
+    }
+
+    updateAutoTradingIndicator() {
+        const dot = document.querySelector('.status-dot');
+        const text = document.querySelector('.status-text');
+        const isActive = this.autoTradingEnabled;
+
+        if (dot) {
+            dot.classList.toggle('active', isActive);
+        }
+        if (text) {
+            text.textContent = isActive ? '运行中' : '已暂停';
+        }
+    }
+
+    setToggleButtonLoading(loading) {
+        const button = document.getElementById('toggleAutoBtn');
+        if (!button) return;
+        this.autoToggleBusy = loading;
+        button.disabled = loading;
+        this.updateAutoTradingButton();
+    }
+
+    async toggleAutoTrading() {
+        if (this.autoToggleBusy) return;
+
+        const targetState = !this.autoTradingEnabled;
+        this.setToggleButtonLoading(true);
+
+        try {
+            const response = await fetch('/api/auto-trading', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: targetState })
+            });
+
+            if (!response.ok) {
+                throw new Error(`Toggle failed with status ${response.status}`);
+            }
+
+            const data = await response.json();
+            this.autoTradingEnabled = Boolean(data.enabled);
+        } catch (error) {
+            console.error('Failed to toggle auto trading:', error);
+            alert('切换自动交易状态失败，请重试');
+        } finally {
+            this.setToggleButtonLoading(false);
+            this.updateAutoTradingControls();
+        }
+    }
+
+    setManualButtonLoading(loading) {
+        const button = document.getElementById('manualExecuteBtn');
+        if (!button) return;
+        button.disabled = loading;
+        if (loading) {
+            button.innerHTML = '<i class="bi bi-hourglass-top"></i> 分析中...';
+        } else {
+            button.innerHTML = '<i class="bi bi-lightning-charge"></i> 手动分析交易';
+        }
+    }
+
+    async manualExecute() {
+        if (this.manualExecuting) return;
+        if (!this.currentModelId) {
+            alert('请先选择一个模型');
+            return;
+        }
+
+        this.manualExecuting = true;
+        this.setManualButtonLoading(true);
+
+        try {
+            const response = await fetch(`/api/models/${this.currentModelId}/execute`, {
+                method: 'POST'
+            });
+
+            let result = {};
+            try {
+                result = await response.json();
+            } catch (error) {
+                console.warn('Manual execution response is not JSON', error);
+            }
+
+            if (!response.ok || (result && result.success === false)) {
+                const message = (result && (result.error || result.message)) || '执行失败，请检查日志';
+                alert(message);
+                return;
+            }
+
+            await this.loadModelData();
+            this.fetchAutoTradingStatus();
+        } catch (error) {
+            console.error('Manual execution failed:', error);
+            alert('手动执行失败，请检查服务端日志');
+        } finally {
+            this.manualExecuting = false;
+            this.setManualButtonLoading(false);
+        }
     }
 
     async loadModels() {
@@ -532,7 +671,8 @@ class TradingApp {
         await Promise.all([
             this.loadModels(),
             this.loadMarketPrices(),
-            this.loadModelData()
+            this.loadModelData(),
+            this.fetchAutoTradingStatus()
         ]);
     }
 
@@ -546,6 +686,10 @@ class TradingApp {
                 this.loadModelData();
             }
         }, 10000);
+
+        this.refreshIntervals.auto = setInterval(() => {
+            this.fetchAutoTradingStatus();
+        }, 15000);
     }
 
     stopRefreshCycles() {

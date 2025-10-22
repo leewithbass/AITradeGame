@@ -1,5 +1,6 @@
 import json
-from typing import Dict, Any, Tuple
+import re
+from typing import Dict, Any, Tuple, List
 from openai import OpenAI, APIConnectionError, APIError
 
 
@@ -194,8 +195,31 @@ Analyze and output JSON only.
             print(traceback.format_exc())
             raise Exception(error_msg)
     
+    def _strip_cot_segments(self, response: str) -> Tuple[str, List[str]]:
+        """Remove known CoT tags (e.g. <think>...</think>) and collect their content."""
+        if not response:
+            return response, []
+
+        cot_segments: List[str] = []
+
+        def _collect(match: re.Match) -> str:
+            content = match.group('content').strip()
+            if content:
+                cot_segments.append(content)
+            return '\n'
+
+        pattern = re.compile(
+            r'<\s*(?P<tag>think|thinking|reasoning|cot)\b[^>]*>'
+            r'(?P<content>.*?)'
+            r'</\s*(?P=tag)\s*>',
+            flags=re.IGNORECASE | re.DOTALL
+        )
+        cleaned = re.sub(pattern, _collect, response)
+        return cleaned.strip(), cot_segments
+
     def _parse_response(self, response: str) -> Tuple[Dict, Any]:
         response = response.strip()
+        response, cot_segments = self._strip_cot_segments(response)
         
         if '```json' in response:
             response = response.split('```json')[1].split('```')[0]
@@ -210,8 +234,17 @@ Analyze and output JSON only.
             else:
                 decisions = parsed if isinstance(parsed, dict) else {}
                 cot_trace = []
+
+            if isinstance(cot_trace, str):
+                cot_trace = [cot_trace]
+            elif isinstance(cot_trace, dict):
+                cot_trace = [json.dumps(cot_trace, ensure_ascii=False)]
+
+            if (not cot_trace or (isinstance(cot_trace, list) and len(cot_trace) == 0)) and cot_segments:
+                cot_trace = cot_segments
+
             return decisions, cot_trace
         except json.JSONDecodeError as e:
             print(f"[ERROR] JSON parse failed: {e}")
             print(f"[DATA] Response:\n{response}")
-            return {}, []
+            return {}, cot_segments or []

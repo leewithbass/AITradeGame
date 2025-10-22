@@ -15,7 +15,9 @@ CORS(app)
 db = Database('trading_bot.db')
 market_fetcher = MarketDataFetcher()
 trading_engines = {}
-auto_trading = True
+auto_trading_enabled = threading.Event()
+auto_trading_enabled.set()
+trading_thread = None
 
 
 def build_ai_trader_from_model(model):
@@ -149,6 +151,24 @@ def get_market_prices():
     prices = market_fetcher.get_current_prices(coins)
     return jsonify(prices)
 
+def sleep_with_auto_check(seconds: float):
+    """Sleep in small steps so that auto trading pause takes effect quickly."""
+    end_time = time.time() + seconds
+    while time.time() < end_time and auto_trading_enabled.is_set():
+        remaining = end_time - time.time()
+        time.sleep(min(1.0, max(0.1, remaining)))
+
+
+def ensure_trading_thread():
+    """Start trading loop thread if not already running."""
+    global trading_thread
+    if trading_thread and trading_thread.is_alive():
+        return
+    trading_thread = threading.Thread(target=trading_loop, daemon=True)
+    trading_thread.start()
+    print("[INFO] Auto-trading thread started")
+
+
 @app.route('/api/models/<int:model_id>/execute', methods=['POST'])
 def execute_trading(model_id):
     model = db.get_model(model_id)
@@ -176,10 +196,13 @@ def execute_trading(model_id):
 def trading_loop():
     print("[INFO] Trading loop started")
     
-    while auto_trading:
+    while True:
+        auto_trading_enabled.wait()
+        if not auto_trading_enabled.is_set():
+            continue
         try:
             if not trading_engines:
-                time.sleep(30)
+                sleep_with_auto_check(30)
                 continue
             
             print(f"\n{'='*60}")
@@ -242,16 +265,37 @@ def trading_loop():
             print(f"[SLEEP] Waiting {sleep_time} seconds for next cycle")
             print(f"{'='*60}\n")
             
-            time.sleep(sleep_time)
+            sleep_with_auto_check(sleep_time)
             
         except Exception as e:
             print(f"\n[CRITICAL] Trading loop error: {e}")
             import traceback
             print(traceback.format_exc())
             print("[RETRY] Retrying in 60 seconds\n")
-            time.sleep(60)
+            sleep_with_auto_check(60)
     
     print("[INFO] Trading loop stopped")
+
+
+@app.route('/api/auto-trading', methods=['GET', 'POST'])
+def auto_trading_control():
+    if request.method == 'GET':
+        return jsonify({'enabled': auto_trading_enabled.is_set()})
+    
+    data = request.json or {}
+    enabled = bool(data.get('enabled'))
+    
+    if enabled:
+        auto_trading_enabled.set()
+        ensure_trading_thread()
+        message = 'Auto trading enabled'
+        print("[INFO] Auto trading resumed via API")
+    else:
+        auto_trading_enabled.clear()
+        message = 'Auto trading paused'
+        print("[INFO] Auto trading paused via API")
+    
+    return jsonify({'enabled': auto_trading_enabled.is_set(), 'message': message})
 
 @app.route('/api/leaderboard', methods=['GET'])
 def get_leaderboard():
@@ -318,9 +362,8 @@ if __name__ == '__main__':
     
     init_trading_engines()
     
-    if auto_trading:
-        trading_thread = threading.Thread(target=trading_loop, daemon=True)
-        trading_thread.start()
+    if auto_trading_enabled.is_set():
+        ensure_trading_thread()
         print("[INFO] Auto-trading enabled")
     
     print("\n" + "=" * 60)

@@ -103,6 +103,8 @@ body {
 .header-right {
     display: flex;
     gap: 12px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
 }
 
 /* Buttons */
@@ -137,6 +139,13 @@ body {
 
 .btn-secondary:hover {
     background: var(--bg-3);
+}
+
+.btn-primary:disabled,
+.btn-secondary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    box-shadow: none;
 }
 
 .btn-icon {
