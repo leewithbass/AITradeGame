@@ -27,6 +27,12 @@ class TradingApp {
         document.querySelectorAll('.tab-btn').forEach(btn => {
             btn.addEventListener('click', (e) => this.switchTab(e.target.dataset.tab));
         });
+
+        const autoRunCheckbox = document.getElementById('autoRun');
+        if (autoRunCheckbox) {
+            autoRunCheckbox.addEventListener('change', () => this.toggleAutoRunFields());
+        }
+        this.toggleAutoRunFields();
     }
 
     async loadModels() {
@@ -275,18 +281,15 @@ class TradingApp {
 
     updateConversations(conversations) {
         const container = document.getElementById('conversationsBody');
-        
-        if (conversations.length === 0) {
+
+        if (!conversations || conversations.length === 0) {
             container.innerHTML = '<div class="empty-state">暂无对话记录</div>';
             return;
         }
 
-        container.innerHTML = conversations.map(conv => `
-            <div class="conversation-item">
-                <div class="conversation-time">${new Date(conv.timestamp.replace(' ', 'T') + 'Z').toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}</div>
-                <div class="conversation-content">${conv.ai_response}</div>
-            </div>
-        `).join('');
+        container.innerHTML = conversations
+            .map(conv => this.renderConversation(conv))
+            .join('');
     }
 
     async loadMarketPrices() {
@@ -326,8 +329,113 @@ class TradingApp {
         document.getElementById(`${tabName}Tab`).classList.add('active');
     }
 
+    toggleAutoRunFields() {
+        const checkbox = document.getElementById('autoRun');
+        const intervalGroup = document.getElementById('autoRunIntervalGroup');
+        const intervalInput = document.getElementById('autoRunInterval');
+        const isChecked = checkbox ? checkbox.checked : false;
+        
+        if (intervalGroup) {
+            intervalGroup.classList.toggle('hidden', !isChecked);
+        }
+        if (intervalInput) {
+            intervalInput.disabled = !isChecked;
+        }
+    }
+
+    escapeHtml(text) {
+        if (typeof text !== 'string') {
+            return text;
+        }
+        const map = {
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;'
+        };
+        return text.replace(/[&<>"']/g, (m) => map[m]);
+    }
+
+    renderCotTrace(cotTrace) {
+        if (!cotTrace) {
+            return '';
+        }
+
+        let parsed = cotTrace;
+        if (typeof cotTrace === 'string') {
+            const trimmed = cotTrace.trim();
+            if (!trimmed) {
+                return '';
+            }
+            try {
+                parsed = JSON.parse(trimmed);
+            } catch (error) {
+                parsed = trimmed;
+            }
+        }
+
+        if (Array.isArray(parsed) && parsed.length > 0) {
+            const items = parsed
+                .map(step => `<li>${this.escapeHtml(String(step))}</li>`)
+                .join('');
+            return `
+                <div class="conversation-cot">
+                    <div class="conversation-cot-title">思维链</div>
+                    <ol>${items}</ol>
+                </div>
+            `;
+        }
+
+        if (parsed && typeof parsed === 'object') {
+            return `
+                <div class="conversation-cot">
+                    <div class="conversation-cot-title">思维链</div>
+                    <pre class="conversation-cot-raw">${this.escapeHtml(JSON.stringify(parsed, null, 2))}</pre>
+                </div>
+            `;
+        }
+
+        if (typeof parsed === 'string') {
+            return `
+                <div class="conversation-cot">
+                    <div class="conversation-cot-title">思维链</div>
+                    <pre class="conversation-cot-raw">${this.escapeHtml(parsed)}</pre>
+                </div>
+            `;
+        }
+
+        return '';
+    }
+
+    renderConversation(conv) {
+        let timestamp = '未知时间';
+        if (conv.timestamp) {
+            try {
+                timestamp = new Date(conv.timestamp.replace(' ', 'T') + 'Z')
+                    .toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+            } catch (error) {
+                timestamp = this.escapeHtml(String(conv.timestamp));
+            }
+        }
+
+        const responseText = conv.ai_response ? this.escapeHtml(conv.ai_response) : '无响应';
+        const cotBlock = this.renderCotTrace(conv.cot_trace);
+
+        return `
+            <div class="conversation-item">
+                <div class="conversation-time">${timestamp}</div>
+                <div class="conversation-content">
+                    <pre class="conversation-json">${responseText}</pre>
+                    ${cotBlock}
+                </div>
+            </div>
+        `;
+    }
+
     showModal() {
         document.getElementById('addModelModal').classList.add('show');
+        this.toggleAutoRunFields();
     }
 
     hideModal() {
@@ -335,16 +443,37 @@ class TradingApp {
     }
 
     async submitModel() {
+        const autoRun = document.getElementById('autoRun').checked;
+        let autoRunInterval = parseInt(document.getElementById('autoRunInterval').value, 10);
+        const intervalInvalid = Number.isNaN(autoRunInterval) || autoRunInterval <= 0;
+        if (autoRun && intervalInvalid) {
+            alert('请填写有效的自动运行间隔（秒）');
+            return;
+        }
+        if (intervalInvalid) {
+            autoRunInterval = 180;
+        }
+
         const data = {
-            name: document.getElementById('modelName').value,
-            api_key: document.getElementById('apiKey').value,
-            api_url: document.getElementById('apiUrl').value,
-            model_name: document.getElementById('modelIdentifier').value,
-            initial_capital: parseFloat(document.getElementById('initialCapital').value)
+            name: document.getElementById('modelName').value.trim(),
+            api_key: document.getElementById('apiKey').value.trim(),
+            api_url: document.getElementById('apiUrl').value.trim(),
+            model_name: document.getElementById('modelIdentifier').value.trim(),
+            initial_capital: parseFloat(document.getElementById('initialCapital').value),
+            auto_run: autoRun,
+            auto_run_interval: autoRunInterval,
+            system_prompt: document.getElementById('systemPrompt').value.trim(),
+            user_prompt: document.getElementById('userPrompt').value.trim(),
+            enable_cot: document.getElementById('enableCot').checked
         };
 
         if (!data.name || !data.api_key || !data.api_url || !data.model_name) {
             alert('请填写所有必填字段');
+            return;
+        }
+
+        if (Number.isNaN(data.initial_capital) || data.initial_capital <= 0) {
+            alert('请填写有效的初始资金');
             return;
         }
 
@@ -356,9 +485,9 @@ class TradingApp {
             });
 
             if (response.ok) {
-                this.hideModal();
                 this.loadModels();
                 this.clearForm();
+                this.hideModal();
             }
         } catch (error) {
             console.error('Failed to add model:', error);
@@ -391,6 +520,12 @@ class TradingApp {
         document.getElementById('apiUrl').value = '';
         document.getElementById('modelIdentifier').value = '';
         document.getElementById('initialCapital').value = '100000';
+        document.getElementById('autoRun').checked = true;
+        document.getElementById('autoRunInterval').value = '180';
+        document.getElementById('systemPrompt').value = '';
+        document.getElementById('userPrompt').value = '';
+        document.getElementById('enableCot').checked = false;
+        this.toggleAutoRunFields();
     }
 
     async refresh() {

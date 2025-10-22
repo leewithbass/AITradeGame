@@ -9,6 +9,7 @@ class TradingEngine:
         self.market_fetcher = market_fetcher
         self.ai_trader = ai_trader
         self.coins = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE']
+        self.last_run = None
     
     def execute_trading_cycle(self) -> Dict:
         try:
@@ -20,15 +21,23 @@ class TradingEngine:
             
             account_info = self._build_account_info(portfolio)
             
-            decisions = self.ai_trader.make_decision(
+            ai_result = self.ai_trader.make_decision(
                 market_state, portfolio, account_info
             )
+            decisions = ai_result.get('decisions', {}) if isinstance(ai_result, dict) else ai_result
+            cot_trace = ai_result.get('cot_trace', []) if isinstance(ai_result, dict) else []
+            cot_payload = ''
+            if cot_trace:
+                if isinstance(cot_trace, (list, dict)):
+                    cot_payload = json.dumps(cot_trace, ensure_ascii=False)
+                else:
+                    cot_payload = str(cot_trace)
             
             self.db.add_conversation(
                 self.model_id,
                 user_prompt=self._format_prompt(market_state, portfolio, account_info),
                 ai_response=json.dumps(decisions, ensure_ascii=False),
-                cot_trace=''
+                cot_trace=cot_payload
             )
             
             execution_results = self._execute_decisions(decisions, market_state, portfolio)
@@ -45,7 +54,8 @@ class TradingEngine:
                 'success': True,
                 'decisions': decisions,
                 'executions': execution_results,
-                'portfolio': updated_portfolio
+                'portfolio': updated_portfolio,
+                'cot_trace': cot_trace
             }
             
         except Exception as e:

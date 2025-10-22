@@ -17,6 +17,32 @@ market_fetcher = MarketDataFetcher()
 trading_engines = {}
 auto_trading = True
 
+
+def build_ai_trader_from_model(model):
+    return AITrader(
+        api_key=model['api_key'],
+        api_url=model['api_url'],
+        model_name=model['model_name'],
+        system_prompt=model.get('system_prompt') or '',
+        user_prompt=model.get('user_prompt') or '',
+        enable_cot=bool(model.get('enable_cot'))
+    )
+
+
+def create_trading_engine(model_id: int):
+    model = db.get_model(model_id)
+    if not model:
+        return None
+    
+    engine = TradingEngine(
+        model_id=model_id,
+        db=db,
+        market_fetcher=market_fetcher,
+        ai_trader=build_ai_trader_from_model(model)
+    )
+    engine.last_run = None
+    return engine
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -28,32 +54,53 @@ def get_models():
 
 @app.route('/api/models', methods=['POST'])
 def add_model():
-    data = request.json
+    data = request.json or {}
+    
+    try:
+        initial_capital = float(data.get('initial_capital', 100000))
+    except (TypeError, ValueError):
+        initial_capital = 100000.0
+    
+    try:
+        auto_run_interval = int(data.get('auto_run_interval', 180))
+    except (TypeError, ValueError):
+        auto_run_interval = 180
+    if auto_run_interval <= 0:
+        auto_run_interval = 180
+    
+    auto_run = bool(data.get('auto_run', True))
+    enable_cot = bool(data.get('enable_cot', False))
+    system_prompt = (data.get('system_prompt') or '').strip()
+    user_prompt = (data.get('user_prompt') or '').strip()
+    
     model_id = db.add_model(
         name=data['name'],
         api_key=data['api_key'],
         api_url=data['api_url'],
         model_name=data['model_name'],
-        initial_capital=float(data.get('initial_capital', 100000))
+        initial_capital=initial_capital,
+        auto_run=auto_run,
+        auto_run_interval=auto_run_interval,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        enable_cot=enable_cot
     )
     
     try:
-        model = db.get_model(model_id)
-        trading_engines[model_id] = TradingEngine(
-            model_id=model_id,
-            db=db,
-            market_fetcher=market_fetcher,
-            ai_trader=AITrader(
-                api_key=model['api_key'],
-                api_url=model['api_url'],
-                model_name=model['model_name']
-            )
-        )
-        print(f"[INFO] Model {model_id} ({data['name']}) initialized")
+        engine = create_trading_engine(model_id)
+        if engine:
+            trading_engines[model_id] = engine
+            print(f"[INFO] Model {model_id} ({data['name']}) initialized")
     except Exception as e:
         print(f"[ERROR] Model {model_id} initialization failed: {e}")
     
-    return jsonify({'id': model_id, 'message': 'Model added successfully'})
+    return jsonify({
+        'id': model_id,
+        'message': 'Model added successfully',
+        'auto_run': auto_run,
+        'auto_run_interval': auto_run_interval,
+        'enable_cot': enable_cot
+    })
 
 @app.route('/api/models/<int:model_id>', methods=['DELETE'])
 def delete_model(model_id):
@@ -104,27 +151,27 @@ def get_market_prices():
 
 @app.route('/api/models/<int:model_id>/execute', methods=['POST'])
 def execute_trading(model_id):
+    model = db.get_model(model_id)
+    if not model:
+        return jsonify({'error': 'Model not found'}), 404
+    
     if model_id not in trading_engines:
-        model = db.get_model(model_id)
-        if not model:
-            return jsonify({'error': 'Model not found'}), 404
-        
-        trading_engines[model_id] = TradingEngine(
-            model_id=model_id,
-            db=db,
-            market_fetcher=market_fetcher,
-            ai_trader=AITrader(
-                api_key=model['api_key'],
-                api_url=model['api_url'],
-                model_name=model['model_name']
-            )
-        )
+        engine = create_trading_engine(model_id)
+        if not engine:
+            return jsonify({'error': 'Failed to initialize trading engine'}), 500
+        trading_engines[model_id] = engine
+    else:
+        trading_engines[model_id].ai_trader = build_ai_trader_from_model(model)
     
     try:
-        result = trading_engines[model_id].execute_trading_cycle()
+        engine = trading_engines[model_id]
+        result = engine.execute_trading_cycle()
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+    finally:
+        if model_id in trading_engines:
+            trading_engines[model_id].last_run = time.time()
 
 def trading_loop():
     print("[INFO] Trading loop started")
@@ -140,8 +187,31 @@ def trading_loop():
             print(f"[INFO] Active models: {len(trading_engines)}")
             print(f"{'='*60}")
             
+            active_intervals = []
             for model_id, engine in list(trading_engines.items()):
+                model = db.get_model(model_id)
+                if not model:
+                    trading_engines.pop(model_id, None)
+                    continue
+                
+                if not bool(model.get('auto_run')):
+                    continue
+                
                 try:
+                    interval = int(model.get('auto_run_interval', 180))
+                except (TypeError, ValueError):
+                    interval = 180
+                if interval <= 0:
+                    interval = 180
+                active_intervals.append(interval)
+                
+                last_run = engine.last_run
+                now = time.time()
+                if last_run and (now - last_run) < interval:
+                    continue
+                
+                try:
+                    engine.ai_trader = build_ai_trader_from_model(model)
                     print(f"\n[EXEC] Model {model_id}")
                     result = engine.execute_trading_cycle()
                     
@@ -157,18 +227,22 @@ def trading_loop():
                     else:
                         error = result.get('error', 'Unknown error')
                         print(f"[WARN] Model {model_id} failed: {error}")
-                        
                 except Exception as e:
                     print(f"[ERROR] Model {model_id} exception: {e}")
                     import traceback
                     print(traceback.format_exc())
-                    continue
+                finally:
+                    engine.last_run = time.time()
+            
+            sleep_time = min(active_intervals) if active_intervals else 60
+            if sleep_time < 5:
+                sleep_time = 5
             
             print(f"\n{'='*60}")
-            print(f"[SLEEP] Waiting 3 minutes for next cycle")
+            print(f"[SLEEP] Waiting {sleep_time} seconds for next cycle")
             print(f"{'='*60}\n")
             
-            time.sleep(180)
+            time.sleep(sleep_time)
             
         except Exception as e:
             print(f"\n[CRITICAL] Trading loop error: {e}")
@@ -217,16 +291,14 @@ def init_trading_engines():
             model_name = model['name']
             
             try:
-                trading_engines[model_id] = TradingEngine(
+                engine = TradingEngine(
                     model_id=model_id,
                     db=db,
                     market_fetcher=market_fetcher,
-                    ai_trader=AITrader(
-                        api_key=model['api_key'],
-                        api_url=model['api_url'],
-                        model_name=model['model_name']
-                    )
+                    ai_trader=build_ai_trader_from_model(model)
                 )
+                engine.last_run = None
+                trading_engines[model_id] = engine
                 print(f"  [OK] Model {model_id} ({model_name})")
             except Exception as e:
                 print(f"  [ERROR] Model {model_id} ({model_name}): {e}")

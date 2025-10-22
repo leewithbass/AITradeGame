@@ -33,6 +33,13 @@ class Database:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+
+        # Ensure new model configuration columns exist
+        self._add_column_if_not_exists(cursor, 'models', 'auto_run', 'INTEGER DEFAULT 1')
+        self._add_column_if_not_exists(cursor, 'models', 'auto_run_interval', 'INTEGER DEFAULT 180')
+        self._add_column_if_not_exists(cursor, 'models', 'system_prompt', 'TEXT')
+        self._add_column_if_not_exists(cursor, 'models', 'user_prompt', 'TEXT')
+        self._add_column_if_not_exists(cursor, 'models', 'enable_cot', 'INTEGER DEFAULT 0')
         
         # Portfolios table
         cursor.execute('''
@@ -99,18 +106,42 @@ class Database:
     # ============ Model Management ============
     
     def add_model(self, name: str, api_key: str, api_url: str, 
-                   model_name: str, initial_capital: float = 10000) -> int:
+                   model_name: str, initial_capital: float = 10000,
+                   auto_run: bool = True, auto_run_interval: int = 180,
+                   system_prompt: str = '', user_prompt: str = '',
+                   enable_cot: bool = False) -> int:
         """Add new trading model"""
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO models (name, api_key, api_url, model_name, initial_capital)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (name, api_key, api_url, model_name, initial_capital))
+            INSERT INTO models (
+                name, api_key, api_url, model_name, initial_capital,
+                auto_run, auto_run_interval, system_prompt, user_prompt, enable_cot
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            name,
+            api_key,
+            api_url,
+            model_name,
+            initial_capital,
+            int(bool(auto_run)),
+            int(auto_run_interval),
+            system_prompt,
+            user_prompt,
+            int(bool(enable_cot))
+        ))
         model_id = cursor.lastrowid
         conn.commit()
         conn.close()
         return model_id
+
+    def _add_column_if_not_exists(self, cursor, table: str, column: str, definition: str):
+        """Ensure a column exists on the specified table."""
+        cursor.execute(f'PRAGMA table_info({table})')
+        columns = [row['name'] for row in cursor.fetchall()]
+        if column not in columns:
+            cursor.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
     
     def get_model(self, model_id: int) -> Optional[Dict]:
         """Get model information"""
@@ -328,4 +359,3 @@ class Database:
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
-

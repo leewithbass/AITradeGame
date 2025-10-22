@@ -515,6 +515,44 @@ body {
     word-break: break-word;
 }
 
+.conversation-json,
+.conversation-cot-raw {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-2);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.conversation-cot {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--border-1);
+}
+
+.conversation-cot-title {
+    font-size: 12px;
+    color: var(--text-3);
+    font-weight: 600;
+    margin-bottom: 8px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+.conversation-cot ol {
+    margin: 0;
+    padding-left: 20px;
+    color: var(--text-2);
+}
+
+.conversation-cot li {
+    margin-bottom: 6px;
+}
+
+.conversation-cot li:last-child {
+    margin-bottom: 0;
+}
+
 /* Modal */
 .modal {
     display: none;
@@ -594,6 +632,40 @@ body {
     box-shadow: 0 0 0 3px rgba(51, 112, 255, 0.1);
 }
 
+.inline-group {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.inline-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 500;
+    color: var(--text-2);
+}
+
+.form-checkbox {
+    width: 16px;
+    height: 16px;
+}
+
+.form-hint {
+    font-size: 12px;
+    color: var(--text-3);
+}
+
+textarea.form-input {
+    min-height: 80px;
+    resize: vertical;
+}
+
+.hidden {
+    display: none !important;
+}
+
 /* Responsive */
 @media (max-width: 1200px) {
     .stats-grid {
@@ -633,4 +705,3 @@ body {
 ::-webkit-scrollbar-thumb:hover {
     background: var(--text-3);
 }
-

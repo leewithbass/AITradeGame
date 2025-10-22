@@ -1,47 +1,61 @@
 import json
-from typing import Dict
+from typing import Dict, Any, Tuple
 from openai import OpenAI, APIConnectionError, APIError
 
+
 class AITrader:
-    def __init__(self, api_key: str, api_url: str, model_name: str):
+    def __init__(self, api_key: str, api_url: str, model_name: str,
+                 system_prompt: str = '', user_prompt: str = '', enable_cot: bool = False):
         self.api_key = api_key
         self.api_url = api_url
         self.model_name = model_name
+        self.system_prompt = (system_prompt or '').strip()
+        self.user_prompt = (user_prompt or '').strip()
+        self.enable_cot = bool(enable_cot)
     
-    def make_decision(self, market_state: Dict, portfolio: Dict, 
-                     account_info: Dict) -> Dict:
-        prompt = self._build_prompt(market_state, portfolio, account_info)
+    def make_decision(self, market_state: Dict, portfolio: Dict,
+                      account_info: Dict) -> Dict[str, Any]:
+        context_prompt = self._build_prompt(market_state, portfolio, account_info)
+        user_message = self._compose_user_message(context_prompt)
         
-        response = self._call_llm(prompt)
+        response = self._call_llm(user_message)
         
-        decisions = self._parse_response(response)
+        decisions, cot_trace = self._parse_response(response)
         
-        return decisions
+        return {
+            'decisions': decisions,
+            'cot_trace': cot_trace
+        }
     
-    def _build_prompt(self, market_state: Dict, portfolio: Dict, 
-                     account_info: Dict) -> str:
-        prompt = f"""You are a professional cryptocurrency trader. Analyze the market and make trading decisions.
-
-MARKET DATA:
-"""
+    def _build_prompt(self, market_state: Dict, portfolio: Dict,
+                      account_info: Dict) -> str:
+        prompt = "You are a professional cryptocurrency trader. Analyze the market and make trading decisions.\n\n"
+        prompt += "MARKET DATA:\n"
         for coin, data in market_state.items():
             prompt += f"{coin}: ${data['price']:.2f} ({data['change_24h']:+.2f}%)\n"
             if 'indicators' in data and data['indicators']:
                 indicators = data['indicators']
-                prompt += f"  SMA7: ${indicators.get('sma_7', 0):.2f}, SMA14: ${indicators.get('sma_14', 0):.2f}, RSI: {indicators.get('rsi_14', 0):.1f}\n"
+                prompt += (
+                    f"  SMA7: ${indicators.get('sma_7', 0):.2f}, "
+                    f"SMA14: ${indicators.get('sma_14', 0):.2f}, "
+                    f"RSI: {indicators.get('rsi_14', 0):.1f}\n"
+                )
         
-        prompt += f"""
-ACCOUNT STATUS:
-- Initial Capital: ${account_info['initial_capital']:.2f}
-- Total Value: ${portfolio['total_value']:.2f}
-- Cash: ${portfolio['cash']:.2f}
-- Total Return: {account_info['total_return']:.2f}%
-
-CURRENT POSITIONS:
-"""
+        prompt += (
+            f"\nACCOUNT STATUS:\n"
+            f"- Initial Capital: ${account_info['initial_capital']:.2f}\n"
+            f"- Total Value: ${portfolio['total_value']:.2f}\n"
+            f"- Cash: ${portfolio['cash']:.2f}\n"
+            f"- Total Return: {account_info['total_return']:.2f}%\n\n"
+            f"CURRENT POSITIONS:\n"
+        )
+        
         if portfolio['positions']:
             for pos in portfolio['positions']:
-                prompt += f"- {pos['coin']} {pos['side']}: {pos['quantity']:.4f} @ ${pos['avg_price']:.2f} ({pos['leverage']}x)\n"
+                prompt += (
+                    f"- {pos['coin']} {pos['side']}: {pos['quantity']:.4f} "
+                    f"@ ${pos['avg_price']:.2f} ({pos['leverage']}x)\n"
+                )
         else:
             prompt += "None\n"
         
@@ -60,7 +74,34 @@ TRADING RULES:
    - Close losing positions quickly
    - Let winners run
    - Use technical indicators
+"""
+        
+        if self.enable_cot:
+            prompt += """
+OUTPUT FORMAT (JSON only):
+```json
+{
+  "decisions": {
+    "COIN": {
+      "signal": "buy_to_enter|sell_to_enter|hold|close_position",
+      "quantity": 0.5,
+      "leverage": 10,
+      "profit_target": 45000.0,
+      "stop_loss": 42000.0,
+      "confidence": 0.75,
+      "justification": "Brief reason"
+    }
+  },
+  "cot_trace": [
+    "Step-by-step reasoning explaining the decision making."
+  ]
+}
+```
 
+Analyze and output JSON only.
+"""
+        else:
+            prompt += """
 OUTPUT FORMAT (JSON only):
 ```json
 {
@@ -81,7 +122,32 @@ Analyze and output JSON only.
         
         return prompt
     
-    def _call_llm(self, prompt: str) -> str:
+    def _compose_user_message(self, context: str) -> str:
+        if not self.user_prompt:
+            return context
+        
+        if '{context}' in self.user_prompt:
+            return self.user_prompt.replace('{context}', context)
+        
+        return f"{self.user_prompt}\n\n{context}"
+    
+    def _compose_system_prompt(self) -> str:
+        base_prompt = self.system_prompt or "You are a professional cryptocurrency trader."
+        base_prompt = base_prompt.strip()
+        
+        if self.enable_cot:
+            output_instruction = (
+                "Respond strictly in JSON with keys `decisions` and `cot_trace`. "
+                "`cot_trace` must be an array of short reasoning strings."
+            )
+        else:
+            output_instruction = "Respond strictly in JSON describing the trading decisions for each coin."
+        
+        format_instruction = "Do not include any additional text outside the JSON."
+        
+        return f"{base_prompt}\n\n{output_instruction}\n{format_instruction}"
+    
+    def _call_llm(self, user_message: str) -> str:
         try:
             base_url = self.api_url.rstrip('/')
             if not base_url.endswith('/v1'):
@@ -100,11 +166,11 @@ Analyze and output JSON only.
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a professional cryptocurrency trader. Output JSON format only."
+                        "content": self._compose_system_prompt()
                     },
                     {
                         "role": "user",
-                        "content": prompt
+                        "content": user_message
                     }
                 ],
                 temperature=0.7,
@@ -112,7 +178,7 @@ Analyze and output JSON only.
             )
             
             return response.choices[0].message.content
-            
+        
         except APIConnectionError as e:
             error_msg = f"API connection failed: {str(e)}"
             print(f"[ERROR] {error_msg}")
@@ -128,7 +194,7 @@ Analyze and output JSON only.
             print(traceback.format_exc())
             raise Exception(error_msg)
     
-    def _parse_response(self, response: str) -> Dict:
+    def _parse_response(self, response: str) -> Tuple[Dict, Any]:
         response = response.strip()
         
         if '```json' in response:
@@ -137,9 +203,15 @@ Analyze and output JSON only.
             response = response.split('```')[1].split('```')[0]
         
         try:
-            decisions = json.loads(response.strip())
-            return decisions
+            parsed = json.loads(response.strip())
+            if isinstance(parsed, dict) and 'decisions' in parsed:
+                decisions = parsed.get('decisions') or {}
+                cot_trace = parsed.get('cot_trace', [])
+            else:
+                decisions = parsed if isinstance(parsed, dict) else {}
+                cot_trace = []
+            return decisions, cot_trace
         except json.JSONDecodeError as e:
             print(f"[ERROR] JSON parse failed: {e}")
             print(f"[DATA] Response:\n{response}")
-            return {}
+            return {}, []

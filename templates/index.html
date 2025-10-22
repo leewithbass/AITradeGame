@@ -183,6 +183,31 @@
                     <label>初始资金</label>
                     <input type="number" id="initialCapital" value="100000" class="form-input">
                 </div>
+                <div class="form-group inline-group">
+                    <label class="inline-label">
+                        <input type="checkbox" id="autoRun" class="form-checkbox" checked>
+                        自动运行
+                    </label>
+                </div>
+                <div class="form-group" id="autoRunIntervalGroup">
+                    <label>自动运行间隔（秒）</label>
+                    <input type="number" id="autoRunInterval" value="180" min="5" class="form-input">
+                </div>
+                <div class="form-group">
+                    <label>系统提示词</label>
+                    <textarea id="systemPrompt" rows="3" class="form-input" placeholder="可选，自定义模型的系统角色指令"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>用户提示词</label>
+                    <textarea id="userPrompt" rows="4" class="form-input" placeholder="可选，可使用 {context} 占位符插入默认上下文"></textarea>
+                </div>
+                <div class="form-group inline-group">
+                    <label class="inline-label">
+                        <input type="checkbox" id="enableCot" class="form-checkbox">
+                        启用思维链输出
+                    </label>
+                    <span class="form-hint">模型需要支持返回 reasoning/cot_trace</span>
+                </div>
             </div>
             <div class="modal-footer">
                 <button class="btn-secondary" id="cancelBtn">取消</button>
