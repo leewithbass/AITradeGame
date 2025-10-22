@@ -19,14 +19,28 @@ class AITrader:
         context_prompt = self._build_prompt(market_state, portfolio, account_info)
         user_message = self._compose_user_message(context_prompt)
         
-        response = self._call_llm(user_message)
+        raw_response, finish_reason = self._call_llm(user_message)
         
-        decisions, cot_trace = self._parse_response(response)
+        decisions, cot_trace, parsed = self._parse_response(raw_response)
         
-        return {
+        result = {
             'decisions': decisions,
-            'cot_trace': cot_trace
+            'cot_trace': cot_trace,
+            'raw_response': raw_response,
+            'finish_reason': finish_reason,
+            'parsed': parsed
         }
+        
+        if finish_reason == 'length':
+            result['error'] = (
+                'LLM response truncated (reached max tokens limit). '
+                'Consider increasing max tokens or shortening prompts.'
+            )
+        
+        if not parsed:
+            result['parse_error'] = 'LLM response could not be parsed into JSON.'
+        
+        return result
     
     def _build_prompt(self, market_state: Dict, portfolio: Dict,
                       account_info: Dict) -> str:
@@ -148,7 +162,7 @@ Analyze and output JSON only.
         
         return f"{base_prompt}\n\n{output_instruction}\n{format_instruction}"
     
-    def _call_llm(self, user_message: str) -> str:
+    def _call_llm(self, user_message: str) -> Tuple[str, str]:
         try:
             base_url = self.api_url.rstrip('/')
             if not base_url.endswith('/v1'):
@@ -175,10 +189,31 @@ Analyze and output JSON only.
                     }
                 ],
                 temperature=0.7,
-                max_tokens=2000
+                max_tokens=4096
             )
             
-            return response.choices[0].message.content
+            message = response.choices[0].message
+            content = message.content
+            finish_reason = response.choices[0].finish_reason or ''
+
+            if isinstance(content, list):
+                text_parts = []
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get('type') == 'text':
+                            text_parts.append(block.get('text', ''))
+                        elif block.get('type') == 'reasoning':
+                            text_parts.append(block.get('text', ''))
+                    elif isinstance(block, str):
+                        text_parts.append(block)
+                content = '\n'.join(part for part in text_parts if part)
+            elif content is None:
+                content = ''
+            
+            if not isinstance(content, str):
+                content = str(content)
+            
+            return content, finish_reason
         
         except APIConnectionError as e:
             error_msg = f"API connection failed: {str(e)}"
@@ -217,7 +252,7 @@ Analyze and output JSON only.
         cleaned = re.sub(pattern, _collect, response)
         return cleaned.strip(), cot_segments
 
-    def _parse_response(self, response: str) -> Tuple[Dict, Any]:
+    def _parse_response(self, response: str) -> Tuple[Dict, Any, bool]:
         response = response.strip()
         response, cot_segments = self._strip_cot_segments(response)
         
@@ -243,8 +278,8 @@ Analyze and output JSON only.
             if (not cot_trace or (isinstance(cot_trace, list) and len(cot_trace) == 0)) and cot_segments:
                 cot_trace = cot_segments
 
-            return decisions, cot_trace
+            return decisions, cot_trace, True
         except json.JSONDecodeError as e:
             print(f"[ERROR] JSON parse failed: {e}")
             print(f"[DATA] Response:\n{response}")
-            return {}, cot_segments or []
+            return {}, cot_segments or [], False

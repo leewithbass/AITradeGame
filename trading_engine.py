@@ -26,6 +26,10 @@ class TradingEngine:
             )
             decisions = ai_result.get('decisions', {}) if isinstance(ai_result, dict) else ai_result
             cot_trace = ai_result.get('cot_trace', []) if isinstance(ai_result, dict) else []
+            raw_response = ai_result.get('raw_response', '')
+            parse_error = ai_result.get('parse_error')
+            llm_error = ai_result.get('error')
+            finish_reason = ai_result.get('finish_reason')
             cot_payload = ''
             if cot_trace:
                 if isinstance(cot_trace, (list, dict)):
@@ -33,12 +37,25 @@ class TradingEngine:
                 else:
                     cot_payload = str(cot_trace)
             
+            if parse_error and raw_response:
+                stored_response = raw_response
+            else:
+                try:
+                    stored_response = json.dumps(decisions, ensure_ascii=False)
+                except Exception:
+                    stored_response = raw_response or ''
+            
             self.db.add_conversation(
                 self.model_id,
                 user_prompt=self._format_prompt(market_state, portfolio, account_info),
-                ai_response=json.dumps(decisions, ensure_ascii=False),
+                ai_response=stored_response,
                 cot_trace=cot_payload
             )
+            
+            if llm_error:
+                raise Exception(llm_error)
+            if parse_error:
+                raise Exception(parse_error)
             
             execution_results = self._execute_decisions(decisions, market_state, portfolio)
             
@@ -55,7 +72,8 @@ class TradingEngine:
                 'decisions': decisions,
                 'executions': execution_results,
                 'portfolio': updated_portfolio,
-                'cot_trace': cot_trace
+                'cot_trace': cot_trace,
+                'finish_reason': finish_reason
             }
             
         except Exception as e:
